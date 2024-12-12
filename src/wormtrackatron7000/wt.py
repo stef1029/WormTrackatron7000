@@ -1,5 +1,3 @@
-# main.py
-
 import sys
 import os
 import glob
@@ -28,7 +26,7 @@ def analyze_videos():
         print("Configuration cancelled. Exiting...")
         sys.exit(0)
 
-    video_folder = r"V:\Isabel videos\TrackingVideos_FoodLeaving\TrackingVideos_FoodLeaving - Copy"
+    video_folder = os.getcwd()
     video_list = glob.glob(os.path.join(video_folder, '**', '*.wmv'), recursive=True)
     # video_list = [video_list[0]]
 
@@ -57,7 +55,7 @@ def analyze_videos():
 
 def review_mode():
     """Function to handle review mode"""
-    video_folder = r"V:\Isabel videos\TrackingVideos_FoodLeaving\TrackingVideos_FoodLeaving - Copy"
+    video_folder = os.getcwd()
     video_list = glob.glob(os.path.join(video_folder, '**', '*.wmv'), recursive=True)
     
     if not video_list:
@@ -97,7 +95,7 @@ def review_mode():
 
 def plot_mode():
     """Function to handle plot generation"""
-    video_folder = r"V:\Isabel videos\TrackingVideos_FoodLeaving\TrackingVideos_FoodLeaving - Copy"
+    video_folder = os.getcwd()
     print("Starting plot generation...")
     generate_all_plots(video_folder)
 
