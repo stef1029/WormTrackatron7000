@@ -7,14 +7,19 @@ import matplotlib.pyplot as plt
 import glob
 import sys
 import tkinter as tk
+import multiprocessing as mp
+from functools import partial
+
+from startup_gui import show_polygon_selection_gui, show_config_gui, show_review_selection_gui
 
 class WormTracker:
-    def __init__(self, video_path, polygon_coords=None, save_video=True, plot_results=False, show_plot=False):
+    def __init__(self, video_path, polygon_coords=None, save_video=True, plot_results=False, show_plot=False, create_trace=False):
         self.video_path = video_path
         self.polygon_coords = polygon_coords
         self.save_video = save_video
         self.plot_results = plot_results
         self.show_plot = show_plot
+        self.create_trace = create_trace  # New parameter
 
         self.cap = cv2.VideoCapture(video_path)
         if not self.cap.isOpened():
@@ -33,9 +38,14 @@ class WormTracker:
 
         self.csv_path = os.path.join(self.output_dir, f"{base_name}_worms_count.csv")
         self.video_output_path = os.path.join(self.output_dir, f"{base_name}_labeled.avi")
+        self.trace_output_path = os.path.join(self.output_dir, f"{base_name}_trace.png")
         self.polygon_file = os.path.join(self.output_dir, f"{base_name}_polygon.npy")
 
         self.out = None
+        
+        # Initialize trace map
+        if self.create_trace:
+            self.trace_map = np.zeros((self.height, self.width, 3), dtype=np.uint8)
 
         self.roi_points = []
         self.roi_final = None
@@ -60,9 +70,6 @@ class WormTracker:
         if self.roi_final is not None:
             # Polygon known, skip
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            if self.save_video:
-                fourcc = cv2.VideoWriter_fourcc(*"XVID")
-                self.out = cv2.VideoWriter(self.video_output_path, fourcc, self.fps, (self.width, self.height))
             return
 
         ret, frame = self.cap.read()
@@ -117,9 +124,6 @@ class WormTracker:
         print(f"Polygon saved for {self.video_path} at {self.polygon_file}")
 
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-        if self.save_video:
-            fourcc = cv2.VideoWriter_fourcc(*"XVID")
-            self.out = cv2.VideoWriter(self.video_output_path, fourcc, self.fps, (self.width, self.height))
 
     def point_in_polygon(self, point, polygon):
         test = cv2.pointPolygonTest(polygon, point, False)
@@ -131,6 +135,19 @@ class WormTracker:
             csv_writer.writerow(["Frame", "Worms_Inside", "Worms_Outside"])
 
             frame_count = 0
+            
+            # Store original first frame for final trace image
+            ret, first_frame = self.cap.read()
+            if not ret:
+                return
+                
+            # Create trace overlay with transparency
+            if self.create_trace:
+                self.trace_map = np.zeros_like(first_frame, dtype=np.uint8)
+            
+            # Reset video to start
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
             while True:
                 ret, frame = self.cap.read()
                 if not ret:
@@ -165,32 +182,55 @@ class WormTracker:
                             cx = int(M['m10']/M['m00'])
                             cy = int(M['m01']/M['m00'])
 
-                            if self.point_in_polygon((cx, cy), self.roi_final):
+                            is_inside = self.point_in_polygon((cx, cy), self.roi_final)
+                            if is_inside:
                                 worm_count_inside += 1
+                                contour_color = (0, 255, 0)  # Green for inside
                             else:
                                 worm_count_outside += 1
+                                contour_color = (0, 0, 255)  # Red for outside
+
+                            # Update trace map with semi-transparent dots
+                            if self.create_trace:
+                                cv2.circle(self.trace_map, (cx, cy), 3, contour_color, -1)
 
                             if self.save_video:
-                                cv2.drawContours(labeled_frame, [contour], -1, (0,255,0), 2)
+                                cv2.drawContours(labeled_frame, [contour], -1, contour_color, 2)
                                 cv2.putText(labeled_frame, str(worm_id), (cx, cy - 5),
-                                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1)
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, contour_color, 1)
 
                 csv_writer.writerow([frame_count, worm_count_inside, worm_count_outside])
 
                 if self.save_video:
                     cv2.putText(labeled_frame, f"Inside: {worm_count_inside}", (10,30),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,255,0), 2)
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,255,0), 2)
                     cv2.putText(labeled_frame, f"Outside: {worm_count_outside}", (10,70),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,255,0), 2)
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,0,255), 2)
                     cv2.polylines(labeled_frame, [self.roi_final], True, (255,0,0), 2)
                     self.out.write(labeled_frame)
 
-        print(f"Processing complete for {self.video_path}.\nCSV saved to {self.csv_path}")
-        if self.save_video:
-            print(f"Labeled video saved to {self.video_output_path}")
+            print(f"Processing complete for {self.video_path}.\nCSV saved to {self.csv_path}")
+            if self.save_video:
+                print(f"Labeled video saved to {self.video_output_path}")
 
-        if self.plot_results:
-            self._plot_worm_counts(self.csv_path, self.show_plot)
+            # Create final trace image by blending with first frame
+            if self.create_trace:
+                # Create a mask where traces are drawn
+                trace_mask = cv2.cvtColor(cv2.threshold(cv2.cvtColor(self.trace_map, cv2.COLOR_BGR2GRAY), 
+                                                    1, 255, cv2.THRESH_BINARY)[1], cv2.COLOR_GRAY2BGR)
+                
+                # Blend the original frame with traces
+                alpha = 0.7  # Adjust this value to change trace visibility (0.0-1.0)
+                final_trace = cv2.addWeighted(first_frame, 1.0, self.trace_map, alpha, 0)
+                
+                # Draw the ROI polygon
+                cv2.polylines(final_trace, [self.roi_final], True, (255,0,0), 2)
+                
+                cv2.imwrite(self.trace_output_path, final_trace)
+                print(f"Trace map saved to {self.trace_output_path}")
+
+            if self.plot_results:
+                self._plot_worm_counts(self.csv_path, self.show_plot)
 
     def _plot_worm_counts(self, csv_path, show_plot=False):
         frames = []
@@ -235,60 +275,42 @@ class WormTracker:
         if self.out is not None:
             self.out.release()
 
+def process_single_video(args):
+    """Process a single video - to be run in parallel"""
+    video_path, coords, config_dict = args
+    
+    tracker = WormTracker(video_path, polygon_coords=coords,
+                         save_video=config_dict['save_video'],
+                         plot_results=config_dict['plot_results'],
+                         show_plot=config_dict['show_plot'],
+                         create_trace=config_dict['create_trace'])  # Added new parameter
+    
+    tracker.set_parameters(threshold_value=config_dict['threshold'],
+                         blur_kernel_size=config_dict['blur_kernel'],
+                         invert_colors=config_dict['invert_colors'])
+    
+    if tracker.save_video:
+        fourcc = cv2.VideoWriter_fourcc(*"XVID")
+        tracker.out = cv2.VideoWriter(tracker.video_output_path, fourcc, tracker.fps, 
+                                    (tracker.width, tracker.height))
+    
+    tracker.process_video()
+    tracker.release()
+    return f"Completed processing {video_path}"
 
-def show_polygon_selection_gui(video_list, polygon_files):
-    """
-    Show a Tkinter GUI with checkboxes for videos that have previously saved polygons.
-    The user can select which videos to use previous coords for.
-    polygon_files: dict mapping video_path to polygon_file or None.
-    Returns: dict {video_path: bool} True=use previous, False=relabel
-    """
-    root = tk.Tk()
-    root.title("Select Videos to Use Previous Polygons")
 
-    instructions = tk.Label(root, text="Select which videos to use previous polygon coords for:\n(Unselected videos will be re-labeled.)")
-    instructions.pack(pady=10)
+def organize_videos_by_folder(video_list):
+    """Group videos by their containing folder"""
+    folders = {}
+    for video_path in video_list:
+        folder = os.path.dirname(video_path)
+        if folder not in folders:
+            folders[folder] = []
+        folders[folder].append(video_path)
+    return folders
 
-    var_dict = {}
-    for v in video_list:
-        poly_file = polygon_files[v]
-        if poly_file is not None and os.path.exists(poly_file):
-            var = tk.BooleanVar(value=True)
-            cb = tk.Checkbutton(root, text=os.path.basename(v), variable=var)
-            cb.pack(anchor='w')
-            var_dict[v] = var
-        else:
-            lbl = tk.Label(root, text=f"{os.path.basename(v)} (no previous polygon)")
-            lbl.pack(anchor='w')
-            var_dict[v] = None
-
-    def confirm():
-        root.destroy()
-
-    confirm_btn = tk.Button(root, text="Confirm", command=confirm)
-    confirm_btn.pack(pady=10)
-
-    root.mainloop()
-
-    result = {}
-    for v in video_list:
-        if var_dict[v] is None:
-            result[v] = False
-        else:
-            result[v] = var_dict[v].get()
-    return result
-
-if __name__ == "__main__":
-    video_folder = r"V:\Isabel videos\TrackingVideos_FoodLeaving\TrackingVideos_FoodLeaving"
-    save_video = False
-    plot_results = False
-    show_plot = False
-    group_videos = True  # If True, all videos in same subfolder share polygon
-
-    # Find all wmv files recursively
-    video_list = glob.glob(os.path.join(video_folder, '**', '*.wmv'), recursive=True)
-
-    # Check for existing polygons per video
+def get_existing_polygons(video_list):
+    """Check for existing polygon files for each video"""
     polygon_files = {}
     for v in video_list:
         base_name = os.path.splitext(os.path.basename(v))[0]
@@ -297,64 +319,150 @@ if __name__ == "__main__":
             polygon_files[v] = poly_file
         else:
             polygon_files[v] = None
+    return polygon_files
+
+def handle_group_polygons(folders, use_previous, polygon_files):
+    """Handle polygon selection and assignment for grouped videos"""
+    video_coords = {}
+    
+    for folder, folder_videos in folders.items():
+        group_poly_file = os.path.join(folder, 'group_polygon.npy')
+        folder_coords = None
+
+        # Check if any video in the folder has a polygon we want to reuse
+        reuse_found = False
+        for video_path in folder_videos:
+            if use_previous.get(video_path, False) and polygon_files[video_path] is not None:
+                folder_coords = np.load(polygon_files[video_path], allow_pickle=True).tolist()
+                reuse_found = True
+                print(f"Reusing polygon from {os.path.basename(video_path)} for folder {os.path.basename(folder)}")
+                break
+
+        # If no reusable polygon found, create new one for the folder
+        if not reuse_found:
+            first_video = folder_videos[0]
+            print(f"\nDrawing polygon for folder: {os.path.basename(folder)}")
+            print(f"Using video: {os.path.basename(first_video)}")
+            
+            temp_tracker = WormTracker(first_video, None, False, False, False)
+            temp_tracker.select_roi_polygon()
+            folder_coords = temp_tracker.roi_points
+            temp_tracker.release()
+
+            # Save the group polygon
+            np.save(group_poly_file, folder_coords)
+            print(f"Saved group polygon for folder {os.path.basename(folder)}")
+
+        # Apply the folder coordinates to all videos in the folder
+        for video_path in folder_videos:
+            video_coords[video_path] = folder_coords
+            
+    return video_coords
+
+def handle_individual_polygons(video_list, use_previous, polygon_files):
+    """Handle polygon selection and assignment for individual videos"""
+    video_coords = {}
+    for video_path in video_list:
+        coords = None
+        if use_previous[video_path] and polygon_files[video_path] is not None:
+            coords = np.load(polygon_files[video_path], allow_pickle=True).tolist()
+        else:
+            temp_tracker = WormTracker(video_path, None, False, False, False)
+            temp_tracker.select_roi_polygon()
+            coords = temp_tracker.roi_points
+            temp_tracker.release()
+        video_coords[video_path] = coords
+    return video_coords
+
+def process_videos_parallel(video_list, video_coords, config):
+    """Process videos in parallel using multiprocessing"""
+    num_processes = min(mp.cpu_count(), len(video_list))
+    pool = mp.Pool(processes=num_processes)
+    
+    processing_args = [(video_path, video_coords[video_path], dict(config)) 
+                      for video_path in video_list]
+    
+    results = []
+    for args in processing_args:
+        result = pool.apply_async(process_single_video, (args,))
+        results.append(result)
+
+    for result in results:
+        print(result.get())
+
+    pool.close()
+    pool.join()
+
+def main():
+    """Main function to run the worm tracking analysis"""
+    # Check for review mode
+    if len(sys.argv) > 1 and sys.argv[1] == "review":
+        video_folder = r"V:\Isabel videos\TrackingVideos_FoodLeaving\TrackingVideos_FoodLeaving - Copy"
+        video_list = glob.glob(os.path.join(video_folder, '**', '*.wmv'), recursive=True)
+        
+        if not video_list:
+            print("No .wmv files found in the directory or its subdirectories.")
+            sys.exit(0)
+            
+        # Show review selection GUI
+        selected_videos = show_review_selection_gui(video_list)
+        
+        if selected_videos is None:
+            print("Review selection cancelled. Exiting...")
+            sys.exit(0)
+            
+        # Filter videos that were selected for review
+        videos_to_review = [
+            video_path for video_path, selected in selected_videos.items()
+            if selected
+        ]
+        
+        if not videos_to_review:
+            print("No videos selected for review. Exiting...")
+            sys.exit(0)
+            
+        print("Selected videos for review:")
+        for video in videos_to_review:
+            print(f"- {os.path.basename(video)}")
+            
+        # TODO: Implement the actual review functionality
+        print("\nReview functionality coming soon...")
+        return
+    
+    # Show configuration GUI to get parameters
+    config = show_config_gui()
+    if config is None:
+        print("Configuration cancelled. Exiting...")
+        sys.exit(0)
+
+    video_folder = r"V:\Isabel videos\TrackingVideos_FoodLeaving\TrackingVideos_FoodLeaving - Copy"
+    video_list = glob.glob(os.path.join(video_folder, '**', '*.wmv'), recursive=True)
+    video_list = [video_list[0]]
+
+    if not video_list:
+        print("No .wmv files found in the directory or its subdirectories.")
+        sys.exit(0)
+
+    # Get existing polygon information
+    polygon_files = get_existing_polygons(video_list)
 
     # Show GUI to select reuse of per-video polygons
     use_previous = show_polygon_selection_gui(video_list, polygon_files)
+    
+    if use_previous is None:
+        print("Polygon selection cancelled. Exiting...")
+        sys.exit(0)
 
-    # Process videos, considering grouping
-    # If group_videos=True, each subfolder has a group polygon: group_polygon.npy 
-    # We'll store and load that.
-    # Track which groups have polygons and which groups have had the first video labeled
-    group_polygons = {}
+    # Handle polygon selection based on grouping option
+    if config['group_videos']:
+        folders = organize_videos_by_folder(video_list)
+        video_coords = handle_group_polygons(folders, use_previous, polygon_files)
+    else:
+        video_coords = handle_individual_polygons(video_list, use_previous, polygon_files)
 
-    trackers = []
-    total_videos = len(video_list)
+    # Process videos in parallel
+    process_videos_parallel(video_list, video_coords, config)
+    print("All videos processed in parallel.")
 
-    for i, video_path in enumerate(video_list):
-        group_dir = os.path.dirname(video_path)
-        group_poly_file = os.path.join(group_dir, 'group_polygon.npy')
-
-        coords = None
-        if group_videos:
-            # If group polygon exists, use it
-            if os.path.exists(group_poly_file):
-                coords = np.load(group_poly_file, allow_pickle=True).tolist()
-            else:
-                # No group polygon yet, check user choice for this video
-                if use_previous[video_path] and polygon_files[video_path] is not None:
-                    # User wants to reuse previous polygon for this video
-                    coords = np.load(polygon_files[video_path], allow_pickle=True).tolist()
-                    # After labeling (or loading) first video in group, save as group polygon
-                    # We'll do that after we create the tracker and select ROI if needed
-                else:
-                    # No polygon from previous run or user chose not to reuse
-                    # We'll label this video. After labeling, we save group_polygon.npy
-                    coords = None
-        else:
-            # No grouping
-            if use_previous[video_path] and polygon_files[video_path] is not None:
-                coords = np.load(polygon_files[video_path], allow_pickle=True).tolist()
-            else:
-                coords = None
-
-        tracker = WormTracker(video_path, polygon_coords=coords, save_video=save_video, plot_results=plot_results, show_plot=show_plot)
-        tracker.set_parameters(threshold_value=220, blur_kernel_size=(7,7), invert_colors=False)
-
-        print(f"Select ROI for {video_path}")
-        tracker.select_roi_polygon(video_index=i, video_total=total_videos, scale_factor=0.5)
-
-        if group_videos:
-            # If group polygon didn't exist before and we now have tracker.roi_points (means we labeled or reused polygon), save it
-            if not os.path.exists(group_poly_file) and tracker.roi_points:
-                np.save(group_poly_file, tracker.roi_points)
-                print(f"Saved group polygon for folder '{group_dir}': {group_poly_file}")
-
-        trackers.append(tracker)
-
-    cv2.destroyAllWindows()
-
-    for tracker in trackers:
-        tracker.process_video()
-        tracker.release()
-
-    print("All videos processed.")
+if __name__ == "__main__":
+    main()
