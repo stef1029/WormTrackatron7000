@@ -1,10 +1,16 @@
 import sys
 import os
+import cv2
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                            QHBoxLayout, QLabel, QCheckBox, QPushButton, QFrame,
                            QSpinBox, QScrollArea, QGroupBox, QLineEdit)
+from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+                           QPushButton, QLabel, QSpinBox, QGroupBox)
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QFont, QPalette, QColor
+from PyQt6.QtGui import QPixmap, QImage
+import pandas as pd
+import numpy as np
 
 class ModernConfigWindow(QMainWindow):
     def __init__(self):
@@ -84,13 +90,9 @@ class ModernConfigWindow(QMainWindow):
         options_layout = QVBoxLayout()
         
         self.save_video = QCheckBox("Save labeled videos")
-        self.plot_results = QCheckBox("Generate plots")
-        self.show_plot = QCheckBox("Show plots during processing")
         self.group_videos = QCheckBox("Group videos by folder (share ROI)")
-        self.create_trace = QCheckBox("Create movement trace map")  # New option
         
-        for cb in [self.save_video, self.plot_results, self.show_plot, 
-                  self.group_videos, self.create_trace]:  # Added create_trace
+        for cb in [self.save_video, self.group_videos]:  # Added create_trace
             options_layout.addWidget(cb)
             
         options_group.setLayout(options_layout)
@@ -152,14 +154,11 @@ class ModernConfigWindow(QMainWindow):
     def on_confirm(self):
         if self.threshold_spin.value() < 0 or self.threshold_spin.value() > 255 or self.blur_spin.value() < 1:
             return
-            
+                
         blur = self.blur_spin.value()
         self.result = {
             'save_video': self.save_video.isChecked(),
-            'plot_results': self.plot_results.isChecked(),
-            'show_plot': self.show_plot.isChecked(),
             'group_videos': self.group_videos.isChecked(),
-            'create_trace': self.create_trace.isChecked(),  # New option
             'threshold': self.threshold_spin.value(),
             'blur_kernel': (blur, blur),
             'invert_colors': self.invert_colors.isChecked()
@@ -309,7 +308,17 @@ class VideoReviewSelector(QMainWindow):
         self.video_list = video_list
         self.checkboxes = {}
         self.result = None
+        self.has_trace = self._check_trace_files()
         self.initUI()
+
+    def _check_trace_files(self):
+        """Check which videos have corresponding trace files"""
+        has_trace = {}
+        for video_path in self.video_list:
+            base_name = os.path.splitext(os.path.basename(video_path))[0]
+            trace_path = os.path.join(os.path.dirname(video_path), f"{base_name}_trace.png")
+            has_trace[video_path] = os.path.exists(trace_path)
+        return has_trace
 
     def initUI(self):
         self.setWindowTitle('Select Videos for Review')
@@ -349,6 +358,10 @@ class VideoReviewSelector(QMainWindow):
             QCheckBox:hover {
                 background-color: #f8f8f8;
             }
+            QCheckBox:disabled {
+                background-color: #e0e0e0;
+                color: #888888;
+            }
             QLabel {
                 color: #424242;
                 font-weight: bold;
@@ -363,13 +376,13 @@ class VideoReviewSelector(QMainWindow):
         layout.setContentsMargins(20, 20, 20, 20)
 
         # Instructions
-        instructions = QLabel("Select videos to review:")
+        instructions = QLabel("Select videos to review (greyed out videos have no trace file):")
         instructions.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(instructions)
 
         # Select/Deselect All buttons
         buttons_layout = QHBoxLayout()
-        select_all_btn = QPushButton("Select All")
+        select_all_btn = QPushButton("Select All Available")
         deselect_all_btn = QPushButton("Deselect All")
         select_all_btn.clicked.connect(self.select_all)
         deselect_all_btn.clicked.connect(self.deselect_all)
@@ -395,7 +408,13 @@ class VideoReviewSelector(QMainWindow):
 
         for video_path in self.video_list:
             checkbox = QCheckBox(os.path.basename(video_path))
-            checkbox.setChecked(True)  # Default to checked
+            if self.has_trace[video_path]:
+                checkbox.setChecked(True)
+            else:
+                checkbox.setEnabled(False)
+                checkbox.setChecked(False)
+                checkbox.setText(f"{os.path.basename(video_path)} (no trace file)")
+            
             self.checkboxes[video_path] = checkbox
             scroll_layout.addWidget(checkbox)
 
@@ -422,23 +441,266 @@ class VideoReviewSelector(QMainWindow):
         layout.addLayout(button_container)
 
     def select_all(self):
-        for checkbox in self.checkboxes.values():
-            checkbox.setChecked(True)
+        """Select all videos that have trace files"""
+        for video_path, checkbox in self.checkboxes.items():
+            if self.has_trace[video_path]:
+                checkbox.setChecked(True)
 
     def deselect_all(self):
+        """Deselect all videos"""
         for checkbox in self.checkboxes.values():
-            checkbox.setChecked(False)
+            if checkbox.isEnabled():  # Only uncheck enabled checkboxes
+                checkbox.setChecked(False)
 
     def on_confirm(self):
         self.result = {
             video_path: checkbox.isChecked()
             for video_path, checkbox in self.checkboxes.items()
+            if checkbox.isEnabled()  # Only include enabled checkboxes
         }
         self.close()
 
     def on_exit(self):
         self.result = None
         self.close()
+
+class OffsetAdjustmentWindow(QMainWindow):
+    def __init__(self, video_path, trace_image_path):
+        super().__init__()
+        self.video_path = video_path
+        self.trace_image_path = trace_image_path
+        self.inside_offset = 0
+        self.outside_offset = 0
+        self.result = None
+        self.initUI()
+        
+    def initUI(self):
+        self.setWindowTitle('Adjust Worm Counts')
+        self.setMinimumWidth(800)
+        
+        # Main widget and layout
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+        layout = QVBoxLayout(main_widget)
+        
+        # Style
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #f5f5f5;
+            }
+            QGroupBox {
+                background-color: white;
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
+                margin-top: 1em;
+                font-weight: bold;
+            }
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+            QLabel {
+                color: #424242;
+                font-size: 14px;
+            }
+            QSpinBox {
+                padding: 5px;
+                border: 1px solid #e0e0e0;
+                border-radius: 4px;
+                min-width: 80px;
+            }
+        """)
+        
+        # Video info
+        info_label = QLabel(f"Reviewing: {os.path.basename(self.video_path)}")
+        info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(info_label)
+        
+        # Image display
+        image = cv2.imread(self.trace_image_path)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # Scale image to fit window while maintaining aspect ratio
+        scale_factor = min(700 / image.shape[1], 500 / image.shape[0])
+        new_width = int(image.shape[1] * scale_factor)
+        new_height = int(image.shape[0] * scale_factor)
+        image = cv2.resize(image, (new_width, new_height))
+        
+        q_img = QImage(image.data, image.shape[1], image.shape[0], 
+                      image.shape[1] * 3, QImage.Format.Format_RGB888)
+        pixmap = QPixmap.fromImage(q_img)
+        
+        image_label = QLabel()
+        image_label.setPixmap(pixmap)
+        image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(image_label)
+        
+        # Offset controls
+        controls_layout = QHBoxLayout()
+        
+        # Inside worms group
+        inside_group = QGroupBox("Inside Polygon Offset")
+        inside_layout = QVBoxLayout()
+        inside_layout.addSpacing(10)  # Add spacing at top
+                
+        inside_controls = QHBoxLayout()
+        self.inside_spinbox = QSpinBox()
+        self.inside_spinbox.setRange(-50, 50)
+        self.inside_spinbox.setValue(0)
+                
+        inside_minus = QPushButton("-")
+        inside_minus.setFixedSize(30, 30)  # Make buttons smaller
+        inside_minus.clicked.connect(lambda: self.inside_spinbox.setValue(
+            self.inside_spinbox.value() - 1))
+                
+        inside_plus = QPushButton("+")
+        inside_plus.setFixedSize(30, 30)  # Make buttons smaller
+        inside_plus.clicked.connect(lambda: self.inside_spinbox.setValue(
+            self.inside_spinbox.value() + 1))
+                
+        inside_controls.addWidget(inside_minus)
+        inside_controls.addWidget(self.inside_spinbox)
+        inside_controls.addWidget(inside_plus)
+        inside_layout.addLayout(inside_controls)
+        inside_group.setLayout(inside_layout)
+        controls_layout.addWidget(inside_group)
+                
+        # Outside worms group
+        outside_group = QGroupBox("Outside Polygon Offset")
+        outside_layout = QVBoxLayout()
+        outside_layout.addSpacing(10)  # Add spacing at top
+                
+        outside_controls = QHBoxLayout()
+        self.outside_spinbox = QSpinBox()
+        self.outside_spinbox.setRange(-50, 50)
+        self.outside_spinbox.setValue(0)
+                
+        outside_minus = QPushButton("-")
+        outside_minus.setFixedSize(30, 30)  # Make buttons smaller
+        outside_minus.clicked.connect(lambda: self.outside_spinbox.setValue(
+            self.outside_spinbox.value() - 1))
+                
+        outside_plus = QPushButton("+")
+        outside_plus.setFixedSize(30, 30)  # Make buttons smaller
+        outside_plus.clicked.connect(lambda: self.outside_spinbox.setValue(
+            self.outside_spinbox.value() + 1))
+        
+        outside_controls.addWidget(outside_minus)
+        outside_controls.addWidget(self.outside_spinbox)
+        outside_controls.addWidget(outside_plus)
+        outside_layout.addLayout(outside_controls)
+        outside_group.setLayout(outside_layout)
+        controls_layout.addWidget(outside_group)
+        
+        layout.addLayout(controls_layout)
+        
+        # Buttons at the bottom
+        button_layout = QHBoxLayout()
+        
+        skip_button = QPushButton("Skip (No Changes)")
+        skip_button.clicked.connect(self.on_skip)
+        button_layout.addWidget(skip_button)
+        
+        confirm_button = QPushButton("Confirm Changes")
+        confirm_button.clicked.connect(self.on_confirm)
+        button_layout.addWidget(confirm_button)
+        
+        layout.addLayout(button_layout)
+
+    def on_skip(self):
+        self.result = {
+            'inside_offset': 0,
+            'outside_offset': 0
+        }
+        self.close()
+        
+    def on_confirm(self):
+        self.result = {
+            'inside_offset': self.inside_spinbox.value(),
+            'outside_offset': self.outside_spinbox.value()
+        }
+        self.close()
+
+class ReviewConfigWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.result = None
+        self.initUI()
+        
+    def initUI(self):
+        self.setWindowTitle('Review Configuration')
+        self.setMinimumSize(500, 200)
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #f5f5f5;
+            }
+            QGroupBox {
+                background-color: white;
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
+                margin-top: 1em;
+                font-weight: bold;
+            }
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 10px 20px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+            QCheckBox {
+                spacing: 8px;
+            }
+        """)
+
+        # Central widget
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        layout = QVBoxLayout(central_widget)
+        layout.setSpacing(15)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        # Options Group
+        options_group = QGroupBox("Review Options")
+        options_layout = QVBoxLayout()
+        
+        self.group_videos = QCheckBox("Group videos by folder (apply same offsets)")
+        options_layout.addWidget(self.group_videos)
+            
+        options_group.setLayout(options_layout)
+        layout.addWidget(options_group)
+
+        # Start button
+        self.start_button = QPushButton("Start Review")
+        self.start_button.clicked.connect(self.on_confirm)
+        self.start_button.setFixedHeight(50)
+        layout.addWidget(self.start_button)
+
+        layout.addStretch()
+
+    def on_confirm(self):
+        self.result = {
+            'group_videos': self.group_videos.isChecked()
+        }
+        self.close()
+
+def show_review_config_gui():
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = ReviewConfigWindow()
+    window.show()
+    app.exec()
+    return window.result
 
 def show_review_selection_gui(video_list):
     app = QApplication.instance() or QApplication(sys.argv)

@@ -7,13 +7,11 @@ import sys
 
 
 class WormTracker:
-    def __init__(self, video_path, polygon_coords=None, save_video=True, plot_results=False, show_plot=False, create_trace=False):
+    def __init__(self, video_path, polygon_coords=None, save_video=True, create_trace=True):
         self.video_path = video_path
         self.polygon_coords = polygon_coords
         self.save_video = save_video
-        self.plot_results = plot_results
-        self.show_plot = show_plot
-        self.create_trace = create_trace  # New parameter
+        self.create_trace = True  # New parameter
 
         self.cap = cv2.VideoCapture(video_path)
         if not self.cap.isOpened():
@@ -123,6 +121,17 @@ class WormTracker:
         test = cv2.pointPolygonTest(polygon, point, False)
         return test >= 0
 
+    def initialize_video_writer(self):
+        """Initialize video writer for labeled output"""
+        if self.save_video:
+            fourcc = cv2.VideoWriter_fourcc(*"XVID")
+            self.out = cv2.VideoWriter(
+                self.video_output_path, 
+                fourcc, 
+                self.fps, 
+                (self.width, self.height)
+            )
+
     def process_video(self):
         with open(self.csv_path, mode='w', newline='') as csv_file:
             csv_writer = csv.writer(csv_file)
@@ -135,12 +144,17 @@ class WormTracker:
             if not ret:
                 return
                 
-            # Create trace overlay with transparency
+            # Create separate frequency maps for inside and outside dots
             if self.create_trace:
                 self.trace_map = np.zeros_like(first_frame, dtype=np.uint8)
+                # Use float32 for frequency counting, separate for inside/outside
+                self.frequency_map_inside = np.zeros((self.height, self.width), dtype=np.float32)
+                self.frequency_map_outside = np.zeros((self.height, self.width), dtype=np.float32)
             
             # Reset video to start
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+            total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
             while True:
                 ret, frame = self.cap.read()
@@ -167,6 +181,11 @@ class WormTracker:
                 else:
                     labeled_frame = None
 
+                # Create temporary masks for this frame's dots
+                if self.create_trace:
+                    temp_mask_inside = np.zeros((self.height, self.width), dtype=np.uint8)
+                    temp_mask_outside = np.zeros((self.height, self.width), dtype=np.uint8)
+
                 for contour in contours:
                     area = cv2.contourArea(contour)
                     if area > 175:
@@ -179,20 +198,27 @@ class WormTracker:
                             is_inside = self.point_in_polygon((cx, cy), self.roi_final)
                             if is_inside:
                                 worm_count_inside += 1
-                                contour_color = (0, 255, 0)  # Green for inside
+                                # Draw on inside mask with larger radius
+                                if self.create_trace:
+                                    cv2.circle(temp_mask_inside, (cx, cy), 10, 255, -1)
                             else:
                                 worm_count_outside += 1
-                                contour_color = (0, 0, 255)  # Red for outside
-
-                            # Update trace map with semi-transparent dots
-                            if self.create_trace:
-                                cv2.circle(self.trace_map, (cx, cy), 3, contour_color, -1)
+                                # Draw on outside mask with larger radius
+                                if self.create_trace:
+                                    cv2.circle(temp_mask_outside, (cx, cy), 10, 255, -1)
 
                             if self.save_video:
+                                contour_color = (0, 255, 0) if is_inside else (0, 0, 255)
                                 cv2.drawContours(labeled_frame, [contour], -1, contour_color, 2)
                                 cv2.putText(labeled_frame, str(worm_id), (cx, cy - 5),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, contour_color, 1)
 
+                # Update frequency maps with temporary masks
+                if self.create_trace:
+                    self.frequency_map_inside += (temp_mask_inside > 0).astype(np.float32)
+                    self.frequency_map_outside += (temp_mask_outside > 0).astype(np.float32)
+
+                # Write frame data
                 csv_writer.writerow([frame_count, worm_count_inside, worm_count_outside])
 
                 if self.save_video:
@@ -203,19 +229,85 @@ class WormTracker:
                     cv2.polylines(labeled_frame, [self.roi_final], True, (255,0,0), 2)
                     self.out.write(labeled_frame)
 
-            print(f"Processing complete for {self.video_path}.\nCSV saved to {self.csv_path}")
-            if self.save_video:
-                print(f"Labeled video saved to {self.video_output_path}")
-
-            # Create final trace image by blending with first frame
             if self.create_trace:
-                # Create a mask where traces are drawn
-                trace_mask = cv2.cvtColor(cv2.threshold(cv2.cvtColor(self.trace_map, cv2.COLOR_BGR2GRAY), 
-                                                    1, 255, cv2.THRESH_BINARY)[1], cv2.COLOR_GRAY2BGR)
+                # Normalize frequencies separately
+                max_freq = max(np.max(self.frequency_map_inside), np.max(self.frequency_map_outside))
                 
-                # Blend the original frame with traces
-                alpha = 0.7  # Adjust this value to change trace visibility (0.0-1.0)
-                final_trace = cv2.addWeighted(first_frame, 1.0, self.trace_map, alpha, 0)
+                # Create color maps based on frequencies
+                heat_map = np.zeros_like(self.trace_map)
+                
+                # Convert frequencies to color intensities
+                inside_normalized = (self.frequency_map_inside / max_freq * 255).astype(np.uint8)
+                outside_normalized = (self.frequency_map_outside / max_freq * 255).astype(np.uint8)
+                
+                # Apply colors (green for inside, red for outside)
+                heat_map[:, :, 0] = outside_normalized  # Blue channel
+                heat_map[:, :, 1] = inside_normalized   # Green channel
+                heat_map[:, :, 2] = outside_normalized  # Red channel
+                
+                # Create combined mask
+                mask = ((inside_normalized > 0) | (outside_normalized > 0)).astype(np.uint8)
+                mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+                
+                # Blend with original frame
+                alpha = 0.7
+                final_trace = cv2.addWeighted(
+                    first_frame,
+                    1.0,
+                    heat_map,
+                    alpha,
+                    0
+                )
+                
+                # Add colorbar legend - one for each color
+                legend_height = 30
+                legend_width = 256
+                padding = 10
+                
+                # Add space for two colorbars
+                final_trace = cv2.copyMakeBorder(
+                    final_trace,
+                    0, (legend_height + padding) * 2 + padding,
+                    0, 0,
+                    cv2.BORDER_CONSTANT,
+                    value=[255, 255, 255]
+                )
+                
+                # Create and add inside (green) colorbar
+                inside_colorbar = np.zeros((legend_height, legend_width, 3), dtype=np.uint8)
+                for i in range(legend_width):
+                    inside_colorbar[:, i] = [0, i, 0]  # green gradient
+                    
+                # Create and add outside (red) colorbar
+                outside_colorbar = np.zeros((legend_height, legend_width, 3), dtype=np.uint8)
+                for i in range(legend_width):
+                    outside_colorbar[:, i] = [0, 0, i]  # red gradient
+                
+                # Add colorbars to image
+                y_offset_inside = final_trace.shape[0] - (legend_height + padding) * 2
+                y_offset_outside = final_trace.shape[0] - legend_height - padding
+                x_offset = padding
+                
+                final_trace[y_offset_inside:y_offset_inside+legend_height, 
+                        x_offset:x_offset+legend_width] = inside_colorbar
+                final_trace[y_offset_outside:y_offset_outside+legend_height, 
+                        x_offset:x_offset+legend_width] = outside_colorbar
+                
+                # Add text labels
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                cv2.putText(final_trace, 'Inside (Green) - Low', 
+                        (x_offset, y_offset_inside + legend_height + 15), 
+                        font, 0.5, (0, 0, 0), 1)
+                cv2.putText(final_trace, 'High', 
+                        (x_offset + legend_width - 30, y_offset_inside + legend_height + 15), 
+                        font, 0.5, (0, 0, 0), 1)
+                        
+                cv2.putText(final_trace, 'Outside (Red) - Low', 
+                        (x_offset, y_offset_outside + legend_height + 15), 
+                        font, 0.5, (0, 0, 0), 1)
+                cv2.putText(final_trace, 'High', 
+                        (x_offset + legend_width - 30, y_offset_outside + legend_height + 15), 
+                        font, 0.5, (0, 0, 0), 1)
                 
                 # Draw the ROI polygon
                 cv2.polylines(final_trace, [self.roi_final], True, (255,0,0), 2)
@@ -223,46 +315,6 @@ class WormTracker:
                 cv2.imwrite(self.trace_output_path, final_trace)
                 print(f"Trace map saved to {self.trace_output_path}")
 
-            if self.plot_results:
-                self._plot_worm_counts(self.csv_path, self.show_plot)
-
-    def _plot_worm_counts(self, csv_path, show_plot=False):
-        frames = []
-        worms_inside = []
-        worms_outside = []
-
-        with open(csv_path, mode='r', newline='') as file:
-            reader = csv.DictReader(file)
-            for row in reader:
-                frame = int(row['Frame'])
-                inside = int(row['Worms_Inside'])
-                outside = int(row['Worms_Outside'])
-                frames.append(frame)
-                worms_inside.append(inside)
-                worms_outside.append(outside)
-
-        csv_dir = os.path.dirname(csv_path)
-        csv_name = os.path.basename(csv_path)
-        base_name = os.path.splitext(csv_name)[0]
-        output_plot = os.path.join(csv_dir, f"{base_name}_plot.png")
-
-        plt.figure(figsize=(10,6))
-        plt.plot(frames, worms_inside, label="Worms Inside", color='green')
-        plt.plot(frames, worms_outside, label="Worms Outside", color='red')
-
-        plt.title("Worm Counts Over Time")
-        plt.xlabel("Frame Number")
-        plt.ylabel("Number of Worms")
-        plt.legend()
-        plt.grid(True)
-        plt.ylim(0, 14)
-
-        plt.savefig(output_plot, dpi=300)
-        print(f"Plot saved to {output_plot}")
-
-        if show_plot:
-            plt.show()
-        plt.close()
 
     def release(self):
         self.cap.release()
