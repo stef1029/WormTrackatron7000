@@ -1,8 +1,8 @@
 import sys
 import os
 import glob
-from worm_tracker import WormTracker
-from worm_tracker_utils import (
+from wormtrackatron7000.worm_tracker import WormTracker
+from wormtrackatron7000.worm_tracker_utils import (
     organize_videos_by_folder,
     get_existing_polygons,
     handle_group_polygons,
@@ -10,14 +10,14 @@ from worm_tracker_utils import (
     process_videos_parallel,
     review_videos
 )
-from gui import (
+from wormtrackatron7000.gui import (
     show_config_gui,
     show_polygon_selection_gui,
     show_review_selection_gui,
     show_review_config_gui
 )
 
-from plot_utils import generate_all_plots
+from wormtrackatron7000.plot_utils import generate_all_plots
 
 def analyze_videos():
     """Function to handle initial video analysis"""

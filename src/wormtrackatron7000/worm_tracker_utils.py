@@ -9,8 +9,8 @@ from functools import partial
 import pandas as pd
 from PyQt6.QtWidgets import QApplication
 
-from worm_tracker import WormTracker
-from gui import show_polygon_selection_gui, show_config_gui, show_review_selection_gui, OffsetAdjustmentWindow
+from wormtrackatron7000.worm_tracker import WormTracker
+from wormtrackatron7000.gui import show_polygon_selection_gui, show_config_gui, show_review_selection_gui, OffsetAdjustmentWindow
 
 def organize_videos_by_folder(video_list: List[str]) -> Dict[str, List[str]]:
     """Group videos by their containing folder.

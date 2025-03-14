@@ -59,7 +59,7 @@ class ModernConfigWindow(QMainWindow):
                 padding: 5px;
                 border: 1px solid #e0e0e0;
                 border-radius: 4px;
-                min-width: 80px;  /* Made wider */
+                min-width: 120px;  /* Made wider */
                 font-size: 14px;  /* Larger font */
             }
             QLabel {
@@ -108,7 +108,7 @@ class ModernConfigWindow(QMainWindow):
         self.threshold_spin = QSpinBox()
         self.threshold_spin.setRange(0, 255)
         self.threshold_spin.setValue(220)
-        self.threshold_spin.setFixedWidth(100)  # Fixed width for consistency
+        self.threshold_spin.setFixedWidth(120)  # Increased width
         threshold_layout.addWidget(threshold_label)
         threshold_layout.addWidget(self.threshold_spin)
         threshold_layout.addStretch()  # Pushes widgets to the left
@@ -124,7 +124,7 @@ class ModernConfigWindow(QMainWindow):
         self.blur_spin.setRange(1, 31)
         self.blur_spin.setValue(7)
         self.blur_spin.setSingleStep(2)
-        self.blur_spin.setFixedWidth(100)  # Fixed width for consistency
+        self.blur_spin.setFixedWidth(120)  # Increased width
         blur_layout.addWidget(blur_label)
         blur_layout.addWidget(self.blur_spin)
         blur_layout.addStretch()  # Pushes widgets to the left
