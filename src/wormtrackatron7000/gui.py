@@ -1,9 +1,18 @@
+"""
+GUI module for the WORMTRACKATRON7000 application.
+
+This module defines all the GUI components for the worm tracking application, including
+configuration windows, review interfaces, and polygon selection tools. It handles
+user interaction for setting up analysis parameters, selecting videos, reviewing results,
+and adjusting worm counts.
+"""
+
 import sys
 import os
 import cv2
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                            QHBoxLayout, QLabel, QCheckBox, QPushButton, QFrame,
-                           QSpinBox, QScrollArea, QGroupBox, QLineEdit)
+                           QSpinBox, QScrollArea, QGroupBox, QLineEdit, QRadioButton)
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                            QPushButton, QLabel, QSpinBox, QGroupBox)
 from PyQt6.QtCore import Qt, QSize
@@ -13,12 +22,34 @@ import pandas as pd
 import numpy as np
 
 class ModernConfigWindow(QMainWindow):
+    """
+    Main configuration window for the worm tracker application.
+    
+    This window allows users to configure various parameters for the analysis process,
+    including general processing options, detection method, and image processing parameters.
+    
+    Attributes:
+        result (dict or None): Contains all configuration parameters after user confirmation.
+            None if the window was closed without confirmation.
+    """
+    
     def __init__(self):
+        """Initialize the configuration window with default settings."""
         super().__init__()
         self.result = None
         self.initUI()
         
     def initUI(self):
+        """
+        Set up the user interface components for the configuration window.
+        
+        Creates and arranges all UI elements including:
+        - Working directory display
+        - Processing options (save video, group videos)
+        - Worm detection method (centroid vs. contour-based)
+        - Image processing parameters (threshold, blur kernel, invert colors)
+        - Start button
+        """
         self.setWindowTitle('Worm Tracker Configuration')
         self.setMinimumSize(500, 600)
         self.setStyleSheet("""
@@ -52,6 +83,13 @@ class ModernConfigWindow(QMainWindow):
                 spacing: 8px;
             }
             QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+            }
+            QRadioButton {
+                spacing: 8px;
+            }
+            QRadioButton::indicator {
                 width: 18px;
                 height: 18px;
             }
@@ -92,11 +130,25 @@ class ModernConfigWindow(QMainWindow):
         self.save_video = QCheckBox("Save labeled videos")
         self.group_videos = QCheckBox("Group videos by folder (share ROI)")
         
-        for cb in [self.save_video, self.group_videos]:  # Added create_trace
+        for cb in [self.save_video, self.group_videos]:
             options_layout.addWidget(cb)
             
         options_group.setLayout(options_layout)
         layout.addWidget(options_group)
+
+        # Detection Method Group (NEW)
+        detection_group = QGroupBox("Worm Detection Method")
+        detection_layout = QVBoxLayout()
+        
+        self.centroid_detection = QRadioButton("Centroid-based detection (worm center only)")
+        self.contour_detection = QRadioButton("Full contour-based detection (entire worm)")
+        self.centroid_detection.setChecked(True)  # Default to centroid detection
+        
+        detection_layout.addWidget(self.centroid_detection)
+        detection_layout.addWidget(self.contour_detection)
+        
+        detection_group.setLayout(detection_layout)
+        layout.addWidget(detection_group)
 
         # Image Processing Parameters Group
         params_group = QGroupBox("Image Processing Parameters")
@@ -152,6 +204,20 @@ class ModernConfigWindow(QMainWindow):
         layout.addStretch()
 
     def on_confirm(self):
+        """
+        Handle the Start Processing button click event.
+        
+        Validates input parameters and stores the configuration settings in the result attribute.
+        Closes the window if validation passes, otherwise remains open for correction.
+        
+        The result dictionary contains all configuration settings:
+        - save_video: Whether to save labeled videos
+        - group_videos: Whether to group videos by folder
+        - threshold: Threshold value for image processing
+        - blur_kernel: Size of the blur kernel
+        - invert_colors: Whether to invert colors during processing
+        - use_contour_detection: Whether to use full contour-based detection
+        """
         if self.threshold_spin.value() < 0 or self.threshold_spin.value() > 255 or self.blur_spin.value() < 1:
             return
                 
@@ -161,12 +227,36 @@ class ModernConfigWindow(QMainWindow):
             'group_videos': self.group_videos.isChecked(),
             'threshold': self.threshold_spin.value(),
             'blur_kernel': (blur, blur),
-            'invert_colors': self.invert_colors.isChecked()
+            'invert_colors': self.invert_colors.isChecked(),
+            'use_contour_detection': self.contour_detection.isChecked()  # Add the new parameter
         }
         self.close()
 
 class ModernPolygonSelector(QMainWindow):
+    """
+    Window for selecting which videos should use previously saved polygon coordinates.
+    
+    This window displays a list of videos with checkboxes, allowing users to select
+    which videos should reuse their previously defined region of interest (ROI) polygons.
+    Videos without previously saved polygons will be shown but cannot be selected.
+    
+    Attributes:
+        video_list (list): List of video file paths to display.
+        polygon_files (dict): Dictionary mapping video paths to their polygon file paths.
+        checkboxes (dict): Dictionary mapping video paths to their checkbox widgets.
+        result (dict or None): Dictionary mapping video paths to boolean values indicating
+            whether to use previous polygon coordinates. None if canceled.
+    """
+    
     def __init__(self, video_list, polygon_files):
+        """
+        Initialize the polygon selector window.
+        
+        Args:
+            video_list (list): List of video file paths to display.
+            polygon_files (dict): Dictionary mapping video paths to their polygon file paths
+                (or None if no polygon file exists).
+        """
         super().__init__()
         self.video_list = video_list
         self.polygon_files = polygon_files
@@ -175,6 +265,12 @@ class ModernPolygonSelector(QMainWindow):
         self.initUI()
 
     def initUI(self):
+        """
+        Set up the user interface components for the polygon selector window.
+        
+        Creates a scrollable list of videos with checkboxes for those with existing
+        polygon files, and labels for those without. Adds exit and confirm buttons.
+        """
         self.setWindowTitle('Select Videos to Use Previous Polygons')
         self.setMinimumSize(600, 400)
         self.setStyleSheet("""
@@ -284,6 +380,12 @@ class ModernPolygonSelector(QMainWindow):
         layout.addLayout(button_container)
 
     def on_confirm(self):
+        """
+        Handle the Confirm Selection button click event.
+        
+        Creates a dictionary mapping each video path to a boolean indicating whether
+        to use its previous polygon coordinates. Closes the window afterwards.
+        """
         self.result = {}
         for video_path in self.video_list:
             if video_path in self.checkboxes:
@@ -293,17 +395,49 @@ class ModernPolygonSelector(QMainWindow):
         self.close()
 
     def on_exit(self):
+        """
+        Handle the Exit button click event.
+        
+        Sets the result to None to indicate cancellation and closes the window.
+        """
         self.result = None  # Explicitly set to None on exit
         self.close()
 
     def closeEvent(self, event):
-        """Handle window close button event"""
+        """
+        Handle the window close button event.
+        
+        Args:
+            event: The close event object.
+        """
         if self.result is None:  # If close button clicked without confirming
             self.result = None
         event.accept()
 
 class VideoReviewSelector(QMainWindow):
+    """
+    Window for selecting which videos to review and adjust.
+    
+    This window displays a list of videos with checkboxes, allowing users to select
+    which processed videos they want to review and potentially adjust worm counts.
+    Videos without trace files are disabled and cannot be selected.
+    
+    Attributes:
+        video_list (list): List of video file paths to display.
+        checkboxes (dict): Dictionary mapping video paths to their checkbox widgets.
+        result (dict or None): Dictionary mapping video paths to boolean values indicating
+            whether they were selected for review. None if canceled.
+        has_trace (dict): Dictionary mapping video paths to boolean values indicating
+            whether they have trace files.
+    """
+    
     def __init__(self, video_list):
+        """
+        Initialize the video review selector window.
+        
+        Args:
+            video_list (list): List of video file paths to display.
+        """
         super().__init__()
         self.video_list = video_list
         self.checkboxes = {}
@@ -312,7 +446,13 @@ class VideoReviewSelector(QMainWindow):
         self.initUI()
 
     def _check_trace_files(self):
-        """Check which videos have corresponding trace files"""
+        """
+        Check which videos have corresponding trace files.
+        
+        Returns:
+            dict: Dictionary mapping video paths to boolean values indicating 
+                 whether they have trace files.
+        """
         has_trace = {}
         for video_path in self.video_list:
             base_name = os.path.splitext(os.path.basename(video_path))[0]
@@ -321,6 +461,12 @@ class VideoReviewSelector(QMainWindow):
         return has_trace
 
     def initUI(self):
+        """
+        Set up the user interface components for the video review selector window.
+        
+        Creates a scrollable list of videos with checkboxes, select/deselect all buttons,
+        and exit/confirm buttons. Videos without trace files are disabled.
+        """
         self.setWindowTitle('Select Videos for Review')
         self.setMinimumSize(600, 400)
         self.setStyleSheet("""
@@ -441,18 +587,33 @@ class VideoReviewSelector(QMainWindow):
         layout.addLayout(button_container)
 
     def select_all(self):
-        """Select all videos that have trace files"""
+        """
+        Select all videos that have trace files.
+        
+        This method checks all checkboxes for videos that have trace files and can be reviewed.
+        """
         for video_path, checkbox in self.checkboxes.items():
             if self.has_trace[video_path]:
                 checkbox.setChecked(True)
 
     def deselect_all(self):
-        """Deselect all videos"""
+        """
+        Deselect all videos.
+        
+        This method unchecks all enabled checkboxes, leaving disabled ones unchanged.
+        """
         for checkbox in self.checkboxes.values():
             if checkbox.isEnabled():  # Only uncheck enabled checkboxes
                 checkbox.setChecked(False)
 
     def on_confirm(self):
+        """
+        Handle the Start Review button click event.
+        
+        Creates a dictionary mapping each video path to a boolean indicating
+        whether it was selected for review. Only includes videos with trace files.
+        Closes the window afterwards.
+        """
         self.result = {
             video_path: checkbox.isChecked()
             for video_path, checkbox in self.checkboxes.items()
@@ -461,11 +622,38 @@ class VideoReviewSelector(QMainWindow):
         self.close()
 
     def on_exit(self):
+        """
+        Handle the Exit button click event.
+        
+        Sets the result to None to indicate cancellation and closes the window.
+        """
         self.result = None
         self.close()
 
 class OffsetAdjustmentWindow(QMainWindow):
+    """
+    Window for adjusting worm count offsets for a video.
+    
+    This window displays the trace image for a video and allows the user to adjust
+    the counts of worms inside and outside the polygon by setting offset values.
+    
+    Attributes:
+        video_path (str): Path to the video file being reviewed.
+        trace_image_path (str): Path to the trace image file for the video.
+        inside_offset (int): Current offset value for worms inside the polygon.
+        outside_offset (int): Current offset value for worms outside the polygon.
+        result (dict or None): Dictionary containing final offset values after 
+            confirmation, or None if canceled.
+    """
+    
     def __init__(self, video_path, trace_image_path):
+        """
+        Initialize the offset adjustment window.
+        
+        Args:
+            video_path (str): Path to the video file being reviewed.
+            trace_image_path (str): Path to the trace image file for the video.
+        """
         super().__init__()
         self.video_path = video_path
         self.trace_image_path = trace_image_path
@@ -475,6 +663,12 @@ class OffsetAdjustmentWindow(QMainWindow):
         self.initUI()
         
     def initUI(self):
+        """
+        Set up the user interface components for the offset adjustment window.
+        
+        Creates the image display, spinboxes for adjusting inside/outside offsets,
+        and buttons for confirming or skipping adjustments.
+        """
         self.setWindowTitle('Adjust Worm Counts')
         self.setMinimumWidth(800)
         
@@ -615,6 +809,11 @@ class OffsetAdjustmentWindow(QMainWindow):
         layout.addLayout(button_layout)
 
     def on_skip(self):
+        """
+        Handle the Skip button click event.
+        
+        Sets the result to default offset values (0, 0) and closes the window.
+        """
         self.result = {
             'inside_offset': 0,
             'outside_offset': 0
@@ -622,6 +821,11 @@ class OffsetAdjustmentWindow(QMainWindow):
         self.close()
         
     def on_confirm(self):
+        """
+        Handle the Confirm Changes button click event.
+        
+        Sets the result to the current offset values and closes the window.
+        """
         self.result = {
             'inside_offset': self.inside_spinbox.value(),
             'outside_offset': self.outside_spinbox.value()
@@ -629,12 +833,29 @@ class OffsetAdjustmentWindow(QMainWindow):
         self.close()
 
 class ReviewConfigWindow(QMainWindow):
+    """
+    Configuration window for the review process.
+    
+    This window allows users to configure options for the review process,
+    such as whether to group videos by folder for applying the same offsets.
+    
+    Attributes:
+        result (dict or None): Contains configuration parameters after user confirmation.
+            None if the window was closed without confirmation.
+    """
+    
     def __init__(self):
+        """Initialize the review configuration window with default settings."""
         super().__init__()
         self.result = None
         self.initUI()
         
     def initUI(self):
+        """
+        Set up the user interface components for the review configuration window.
+        
+        Creates the group videos checkbox and start button.
+        """
         self.setWindowTitle('Review Configuration')
         self.setMinimumSize(500, 200)
         self.setStyleSheet("""
@@ -690,42 +911,96 @@ class ReviewConfigWindow(QMainWindow):
         layout.addStretch()
 
     def on_confirm(self):
+        """
+        Handle the Start Review button click event.
+        
+        Creates a dictionary containing the review configuration settings and
+        closes the window.
+        """
         self.result = {
             'group_videos': self.group_videos.isChecked()
         }
         self.close()
 
+
 def show_review_config_gui():
+    """
+    Display the review configuration window and return the user's settings.
+    
+    This function creates and shows a ReviewConfigWindow, then waits for the user
+    to confirm or cancel. If confirmed, returns the configuration settings.
+    
+    Returns:
+        dict or None: Dictionary containing review configuration settings,
+            or None if canceled.
+    """
     app = QApplication.instance() or QApplication(sys.argv)
     window = ReviewConfigWindow()
     window.show()
     app.exec()
     return window.result
 
+
 def show_review_selection_gui(video_list):
+    """
+    Display the video review selector window and return the user's selections.
+    
+    This function creates and shows a VideoReviewSelector with the provided list
+    of videos, then waits for the user to confirm or cancel. If confirmed, returns
+    a dictionary indicating which videos were selected for review.
+    
+    Args:
+        video_list (list): List of video file paths to display.
+        
+    Returns:
+        dict or None: Dictionary mapping video paths to boolean values indicating
+            whether they were selected for review, or None if canceled.
+    """
     app = QApplication.instance() or QApplication(sys.argv)
     window = VideoReviewSelector(video_list)
     window.show()
     app.exec()
     return window.result
 
+
 def show_polygon_selection_gui(video_list, polygon_files):
+    """
+    Display the polygon selector window and return the user's selections.
+    
+    This function creates and shows a ModernPolygonSelector with the provided list
+    of videos and their polygon files, then waits for the user to confirm or cancel.
+    If confirmed, returns a dictionary indicating which videos should use their
+    previously saved polygon coordinates.
+    
+    Args:
+        video_list (list): List of video file paths to display.
+        polygon_files (dict): Dictionary mapping video paths to their polygon file paths
+            (or None if no polygon file exists).
+        
+    Returns:
+        dict or None: Dictionary mapping video paths to boolean values indicating
+            whether to use previous polygon coordinates, or None if canceled.
+    """
     app = QApplication.instance() or QApplication(sys.argv)
     window = ModernPolygonSelector(video_list, polygon_files)
     window.show()
     app.exec()
     return window.result
 
+
 def show_config_gui():
+    """
+    Display the main configuration window and return the user's settings.
+    
+    This function creates and shows a ModernConfigWindow, then waits for the user
+    to confirm or cancel. If confirmed, returns the configuration settings.
+    
+    Returns:
+        dict or None: Dictionary containing configuration settings,
+            or None if canceled.
+    """
     app = QApplication.instance() or QApplication(sys.argv)
     window = ModernConfigWindow()
     window.show()
     app.exec()
     return window.result
-
-# def show_polygon_selection_gui(video_list, polygon_files):
-#     app = QApplication.instance() or QApplication(sys.argv)
-#     window = ModernPolygonSelector(video_list, polygon_files)
-#     window.show()
-#     app.exec()
-#     return window.result

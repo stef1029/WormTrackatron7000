@@ -1,3 +1,11 @@
+"""
+Core worm tracking module for the WORMTRACKATRON7000 application.
+
+This module contains the WormTracker class which handles video processing, worm detection,
+polygon region of interest (ROI) selection, and generation of analysis outputs including
+count data, trace maps, and labeled videos.
+"""
+
 import cv2
 import os
 import numpy as np
@@ -7,11 +15,60 @@ import sys
 
 
 class WormTracker:
-    def __init__(self, video_path, polygon_coords=None, save_video=True, create_trace=True):
+    """
+    Main class for worm tracking and video analysis.
+    
+    This class processes video files to track and count worms, distinguishing
+    between those inside and outside a user-defined polygon region of interest (ROI).
+    It can create labeled output videos, trace maps showing worm paths, and CSV data
+    of worm counts.
+    
+    Attributes:
+        video_path (str): Path to the video file being processed.
+        polygon_coords (list or None): List of (x,y) coordinates defining the ROI polygon.
+        save_video (bool): Whether to save a labeled output video.
+        create_trace (bool): Whether to create a trace map of worm paths.
+        use_contour_detection (bool): Whether to use full contour-based detection instead
+            of centroid-based detection.
+        cap (cv2.VideoCapture): OpenCV video capture object.
+        output_dir (str): Directory where output files will be saved.
+        threshold_value (int): Threshold value for binary image processing.
+        blur_kernel_size (tuple): Size of the Gaussian blur kernel.
+        invert_colors (bool): Whether to invert colors during processing.
+        width (int): Width of the video frames.
+        height (int): Height of the video frames.
+        fps (float): Frames per second of the video.
+        csv_path (str): Path where the CSV output will be saved.
+        video_output_path (str): Path where the labeled video will be saved.
+        trace_output_path (str): Path where the trace map will be saved.
+        polygon_file (str): Path where the polygon coordinates will be saved.
+        out (cv2.VideoWriter or None): Video writer for labeled output.
+        trace_map (numpy.ndarray): Array for building the trace map.
+        roi_points (list): List of (x,y) coordinates defining the ROI polygon.
+        roi_final (numpy.ndarray): Array of ROI polygon coordinates for OpenCV functions.
+    """
+    
+    def __init__(self, video_path, polygon_coords=None, save_video=True, create_trace=True, use_contour_detection=False):
+        """
+        Initialize the WormTracker with video path and options.
+        
+        Args:
+            video_path (str): Path to the video file to process.
+            polygon_coords (list, optional): List of (x,y) coordinates defining the ROI polygon.
+                If None, user will be prompted to define a polygon. Defaults to None.
+            save_video (bool, optional): Whether to save a labeled output video. Defaults to True.
+            create_trace (bool, optional): Whether to create a trace map. Defaults to True.
+            use_contour_detection (bool, optional): Whether to use full contour-based detection
+                instead of centroid-based detection. Defaults to False.
+        
+        Raises:
+            ValueError: If the video file cannot be opened.
+        """
         self.video_path = video_path
         self.polygon_coords = polygon_coords
         self.save_video = save_video
         self.create_trace = True  # New parameter
+        self.use_contour_detection = use_contour_detection  # New parameter for detection method
 
         self.cap = cv2.VideoCapture(video_path)
         if not self.cap.isOpened():
@@ -45,20 +102,108 @@ class WormTracker:
             self.roi_points = self.polygon_coords
             self.roi_final = np.array(self.roi_points, dtype=np.int32)
 
-    def set_parameters(self, threshold_value=None, blur_kernel_size=None, invert_colors=None):
+    def set_parameters(self, threshold_value=None, blur_kernel_size=None, invert_colors=None, use_contour_detection=None):
+        """
+        Set image processing parameters for worm detection.
+        
+        Args:
+            threshold_value (int, optional): Threshold value for binary image processing (0-255).
+            blur_kernel_size (tuple, optional): Size of the Gaussian blur kernel as (width, height).
+            invert_colors (bool, optional): Whether to invert colors during processing.
+            use_contour_detection (bool, optional): Whether to use full contour-based detection.
+        """
         if threshold_value is not None:
             self.threshold_value = threshold_value
         if blur_kernel_size is not None:
             self.blur_kernel_size = blur_kernel_size
         if invert_colors is not None:
             self.invert_colors = invert_colors
+        if use_contour_detection is not None:
+            self.use_contour_detection = use_contour_detection
+
+    def point_in_polygon(self, point, polygon):
+        """
+        Check if a point is inside a polygon.
+        
+        Args:
+            point (tuple): (x, y) coordinates of the point to check.
+            polygon (numpy.ndarray): Array of polygon vertices.
+            
+        Returns:
+            bool: True if the point is inside or on the polygon, False otherwise.
+        """
+        test = cv2.pointPolygonTest(polygon, point, False)
+        return test >= 0
+        
+    def contour_in_polygon(self, contour, polygon):
+        """
+        Check if a contour is at least partially inside a polygon.
+        
+        For contour-based detection:
+        - Returns True if ANY point of the contour is inside the polygon
+        - Returns False only if ALL points are outside the polygon
+        
+        Args:
+            contour (numpy.ndarray): Contour to check.
+            polygon (numpy.ndarray): Array of polygon vertices.
+            
+        Returns:
+            bool: True if any part of the contour is inside the polygon, False otherwise.
+        """
+        # Simplify the contour to reduce computation
+        epsilon = 0.01 * cv2.arcLength(contour, True)
+        approx_contour = cv2.approxPolyDP(contour, epsilon, True)
+        
+        # Check each point in the contour
+        for point in approx_contour:
+            # Extract the x,y coordinates correctly from the point
+            x, y = point.ravel()  # Flattens the array to get coordinates
+            
+            # Check if this point is inside the polygon
+            if cv2.pointPolygonTest(polygon, (float(x), float(y)), False) >= 0:
+                # If any point is inside, the contour is considered inside
+                return True
+        
+        # All points are outside
+        return False
 
     def normalize_background(self, frame):
+        """
+        Normalize the background of a frame to improve worm detection.
+        
+        This method divides the frame by a blurred version of itself to
+        reduce the effect of uneven lighting and improve contrast.
+        
+        Args:
+            frame (numpy.ndarray): Input frame to normalize.
+            
+        Returns:
+            numpy.ndarray: Normalized frame.
+        """
         background = cv2.GaussianBlur(frame, (51, 51), 0)
         normalized_frame = cv2.divide(frame, background, scale=255)
         return normalized_frame
 
     def select_roi_polygon(self, video_index=0, video_total=1, scale_factor=0.5):
+        """
+        Allow the user to select a polygon region of interest on the first frame.
+        
+        If polygon coordinates are already known (self.roi_final is not None),
+        this method does nothing. Otherwise, it displays the first frame and
+        lets the user draw a polygon by clicking points.
+        
+        Args:
+            video_index (int, optional): Index of current video when processing multiple.
+                Defaults to 0.
+            video_total (int, optional): Total number of videos being processed.
+                Defaults to 1.
+            scale_factor (float, optional): Scale factor for display purposes.
+                Defaults to 0.5.
+                
+        Raises:
+            ValueError: If the first frame cannot be read or if not enough points
+                are selected to form a polygon.
+        """
         if self.roi_final is not None:
             # Polygon known, skip
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -117,12 +262,13 @@ class WormTracker:
 
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
-    def point_in_polygon(self, point, polygon):
-        test = cv2.pointPolygonTest(polygon, point, False)
-        return test >= 0
-
     def initialize_video_writer(self):
-        """Initialize video writer for labeled output"""
+        """
+        Initialize video writer for labeled output video.
+        
+        This method sets up a video writer to save the processed video with worms
+        labeled as inside or outside the polygon.
+        """
         if self.save_video:
             fourcc = cv2.VideoWriter_fourcc(*"XVID")
             self.out = cv2.VideoWriter(
@@ -133,6 +279,22 @@ class WormTracker:
             )
 
     def process_video(self):
+        """
+        Process the video to track and count worms.
+        
+        This is the main processing method that:
+        1. Reads each frame of the video
+        2. Detects worms using image processing techniques
+        3. Determines if each worm is inside or outside the polygon
+        4. Counts worms in each category
+        5. Optionally creates a labeled output video
+        6. Builds a frequency map for the trace visualization
+        7. Saves worm counts to a CSV file
+        8. Creates a trace map showing where worms were most frequently detected
+        
+        The method uses either centroid-based detection (default) or full contour-based
+        detection based on the use_contour_detection attribute.
+        """
         with open(self.csv_path, mode='w', newline='') as csv_file:
             csv_writer = csv.writer(csv_file)
             csv_writer.writerow(["Frame", "Worms_Inside", "Worms_Outside"])
@@ -195,7 +357,12 @@ class WormTracker:
                             cx = int(M['m10']/M['m00'])
                             cy = int(M['m01']/M['m00'])
 
-                            is_inside = self.point_in_polygon((cx, cy), self.roi_final)
+                            # Determine if worm is inside polygon based on detection method
+                            if self.use_contour_detection:
+                                is_inside = self.contour_in_polygon(contour, self.roi_final)
+                            else:
+                                is_inside = self.point_in_polygon((cx, cy), self.roi_final)
+                                
                             if is_inside:
                                 worm_count_inside += 1
                                 # Draw on inside mask with larger radius
@@ -315,8 +482,13 @@ class WormTracker:
                 cv2.imwrite(self.trace_output_path, final_trace)
                 print(f"Trace map saved to {self.trace_output_path}")
 
-
     def release(self):
+        """
+        Release resources used by the WormTracker.
+        
+        This method releases the video capture and writer objects to free resources.
+        It should be called when processing is complete or when the tracker is no longer needed.
+        """
         self.cap.release()
         if self.out is not None:
             self.out.release()

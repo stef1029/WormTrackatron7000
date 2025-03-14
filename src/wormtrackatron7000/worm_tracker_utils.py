@@ -1,4 +1,10 @@
-# worm_tracker_utils.py
+"""
+Utility module for organizing and processing multiple videos with the WORMTRACKATRON7000.
+
+This module provides functions for organizing videos by folder, handling polygon selections,
+processing videos in parallel, and reviewing/adjusting results. It serves as the coordination
+layer between the core tracking functionality and the user interface.
+"""
 
 import os
 import glob
@@ -13,13 +19,17 @@ from wormtrackatron7000.worm_tracker import WormTracker
 from wormtrackatron7000.gui import show_polygon_selection_gui, show_config_gui, show_review_selection_gui, OffsetAdjustmentWindow
 
 def organize_videos_by_folder(video_list: List[str]) -> Dict[str, List[str]]:
-    """Group videos by their containing folder.
+    """
+    Group videos by their containing folder.
+    
+    This function organizes a list of video paths into a dictionary where each key
+    is a folder path and each value is a list of video paths in that folder.
     
     Args:
         video_list: List of video file paths
         
     Returns:
-        Dictionary mapping folder paths to lists of video paths
+        Dictionary mapping folder paths to lists of video paths in that folder
     """
     folders = {}
     for video_path in video_list:
@@ -30,7 +40,12 @@ def organize_videos_by_folder(video_list: List[str]) -> Dict[str, List[str]]:
     return folders
 
 def get_existing_polygons(video_list: List[str]) -> Dict[str, Optional[str]]:
-    """Check for existing polygon files for each video.
+    """
+    Check for existing polygon files for each video.
+    
+    This function searches for previously saved polygon files for each video
+    in the provided list. For each video, it checks if a corresponding polygon
+    file exists in the same directory.
     
     Args:
         video_list: List of video file paths
@@ -50,7 +65,13 @@ def handle_group_polygons(
     use_previous: Dict[str, bool], 
     polygon_files: Dict[str, Optional[str]]
 ) -> Dict[str, List[Tuple[int, int]]]:
-    """Handle polygon selection and assignment for grouped videos.
+    """
+    Handle polygon selection and assignment for grouped videos.
+    
+    This function manages polygon selection when videos are grouped by folder.
+    For each folder, it either reuses a polygon from one of the videos in that
+    folder (if selected by the user) or creates a new polygon by prompting the user.
+    The same polygon is then applied to all videos in the folder.
     
     Args:
         folders: Dictionary mapping folders to video paths
@@ -103,7 +124,12 @@ def handle_individual_polygons(
     use_previous: Dict[str, bool], 
     polygon_files: Dict[str, Optional[str]]
 ) -> Dict[str, List[Tuple[int, int]]]:
-    """Handle polygon selection and assignment for individual videos.
+    """
+    Handle polygon selection and assignment for individual videos.
+    
+    This function manages polygon selection when videos are processed individually.
+    For each video, it either reuses a previously saved polygon (if selected by the user)
+    or creates a new polygon by prompting the user.
     
     Args:
         video_list: List of video file paths
@@ -130,13 +156,18 @@ def handle_individual_polygons(
     return video_coords
 
 def process_single_video(args: Tuple[str, List[Tuple[int, int]], Dict[str, Any]]) -> str:
-    """Process a single video - to be run in parallel.
+    """
+    Process a single video - to be run in parallel.
+    
+    This function creates a WormTracker instance for a single video, configures it
+    with the provided parameters, and runs the video processing. It's designed to be
+    used with multiprocessing to process multiple videos in parallel.
     
     Args:
         args: Tuple containing (video_path, polygon_coordinates, configuration_dictionary)
         
     Returns:
-        Status message string
+        Status message string indicating completion
     """
     video_path, coords, config_dict = args
     
@@ -144,13 +175,15 @@ def process_single_video(args: Tuple[str, List[Tuple[int, int]], Dict[str, Any]]
         video_path, 
         polygon_coords=coords,
         save_video=config_dict['save_video'],
-        create_trace=True  # Always True now
+        create_trace=True,  # Always True now
+        use_contour_detection=config_dict.get('use_contour_detection', False)  # Add new parameter with default
     )
     
     tracker.set_parameters(
         threshold_value=config_dict['threshold'],
         blur_kernel_size=config_dict['blur_kernel'],
-        invert_colors=config_dict['invert_colors']
+        invert_colors=config_dict['invert_colors'],
+        use_contour_detection=config_dict.get('use_contour_detection', False)  # Add new parameter with default
     )
     
     if tracker.save_video:
@@ -165,12 +198,16 @@ def process_videos_parallel(
     video_coords: Dict[str, List[Tuple[int, int]]], 
     config: Dict[str, Any]
 ) -> None:
-    """Process videos in parallel using multiprocessing.
+    """
+    Process videos in parallel using multiprocessing.
+    
+    This function distributes video processing across multiple CPU cores for faster execution.
+    It creates a pool of worker processes and assigns each video to a worker.
     
     Args:
-        video_list: List of video file paths
+        video_list: List of video file paths to process
         video_coords: Dictionary mapping video paths to polygon coordinates
-        config: Configuration dictionary
+        config: Configuration dictionary with processing parameters
     """
     num_processes = min(mp.cpu_count(), len(video_list))
     pool = mp.Pool(processes=num_processes)
@@ -192,7 +229,17 @@ def process_videos_parallel(
     pool.join()
 
 def update_csv_with_offsets(csv_path, offsets):
-    """Update CSV file with offset values"""
+    """
+    Update CSV file with offset values for worm counts.
+    
+    This function modifies a worm count CSV file to include offset values for
+    inside and outside worm counts. These offsets allow manual correction of
+    counts when reviewing results.
+    
+    Args:
+        csv_path: Path to the CSV file to update
+        offsets: Dictionary containing 'inside_offset' and 'outside_offset' values
+    """
     df = pd.read_csv(csv_path)
     
     # Add offset columns if they don't exist
@@ -209,16 +256,21 @@ def update_csv_with_offsets(csv_path, offsets):
     df.to_csv(csv_path, index=False)
 
 def organize_review_videos(selected_videos, group_videos=False):
-    """Organize videos for review, either individually or by folder.
+    """
+    Organize videos for review, either individually or by folder.
+    
+    This function prepares videos for review by finding their corresponding
+    trace images and CSV files. If group_videos is True, it groups videos by
+    folder and selects one representative video for each group.
     
     Args:
         selected_videos: List of video paths to review
         group_videos: If True, group videos by folder
         
     Returns:
-        List of (video_path, trace_path, csv_paths) tuples to review
-    If grouped, video_path and trace_path are from one representative video,
-    but csv_paths contains all CSVs in that group that need updating.
+        List of (video_path, trace_path, csv_paths) tuples to review.
+        If grouped, video_path and trace_path are from one representative video,
+        but csv_paths contains all CSVs in that group that need updating.
     """
     if not group_videos:
         # Return individual videos
@@ -261,7 +313,12 @@ def organize_review_videos(selected_videos, group_videos=False):
     return review_items
 
 def review_videos(selected_videos, group_videos=False):
-    """Process videos for review, with optional grouping.
+    """
+    Process videos for review, with optional grouping.
+    
+    This function displays offset adjustment windows for the selected videos,
+    allowing the user to correct worm counts. If group_videos is True, the same
+    offset values are applied to all videos in the same folder.
     
     Args:
         selected_videos: List of video paths to review

@@ -1,4 +1,10 @@
-# plot_utils.py
+"""
+Plot utilities module for the WORMTRACKATRON7000 application.
+
+This module provides functions for generating visualizations of worm count data
+from CSV files. It creates plots showing the number of worms inside and outside
+the defined region of interest over time, both with and without applied offsets.
+"""
 
 import os
 import csv
@@ -6,7 +12,18 @@ import matplotlib.pyplot as plt
 import glob
 
 def plot_worm_counts(csv_path):
-    """Create plots for a single CSV file showing original and adjusted counts."""
+    """
+    Create plots for a single CSV file showing original and adjusted counts.
+    
+    This function reads worm count data from a CSV file and generates two plots:
+    1. A plot of the original worm counts (inside and outside)
+    2. A plot of the adjusted worm counts (with offsets applied)
+    
+    The plots are saved as PNG files in the same directory as the CSV file.
+    
+    Args:
+        csv_path (str): Path to the CSV file containing worm count data
+    """
     frames = []
     worms_inside = []
     worms_outside = []
@@ -75,7 +92,15 @@ def plot_worm_counts(csv_path):
     print(f"Generated plots for {os.path.basename(csv_path)}")
 
 def generate_all_plots(folder_path):
-    """Generate plots for all CSV files in the given folder and subfolders."""
+    """
+    Generate plots for all CSV files in the given folder and subfolders.
+    
+    This function searches for all CSV files with names ending in '_worms_count.csv'
+    in the specified folder and its subfolders, then generates plots for each file.
+    
+    Args:
+        folder_path (str): Path to the root folder to search for CSV files
+    """
     csv_files = glob.glob(os.path.join(folder_path, '**', '*_worms_count.csv'), recursive=True)
     
     if not csv_files:

@@ -40,7 +40,7 @@ pip install opencv-python numpy pandas matplotlib PyQt6
 ## Usage
 ### Running the analysis
 ```bash
-python wormtrack analyse
+wormtrack analyse
 ```
 **Process:**
 - The tool first asks for configuration parameters (threshold, blur kernel, etc.).
@@ -50,7 +50,7 @@ python wormtrack analyse
 
 ### Running the review
 ```bash
-python wormtrack review
+wormtrack review
 ```
 **Process:**
 - Displays a simplified configuration GUI for review mode.
@@ -62,7 +62,7 @@ The CSV files are updated with the offset corrections after confirmation.
   
 ### Generating plots
 ```bash
-python wormtrack plot
+wormtrack plot
 ```
 **Process:**
 - Scans for all CSV files in the current directory and subdirectories.
